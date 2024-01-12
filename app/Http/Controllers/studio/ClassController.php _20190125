@@ -1,0 +1,488 @@
+<?php
+
+namespace App\Http\Controllers\studio;
+
+use Illuminate\Http\Request;
+use App\Http\Controllers\Controller;
+use App\StudioClass;
+use App\StudioLocation;
+use App\StudioTeacher;
+use App\StudentClass;
+use App\Style;
+use App\Teacher;
+use Session;
+use Illuminate\Support\Facades\Validator;
+
+
+class ClassController extends Controller
+{
+  public $studio_id;
+  public function __construct()
+  {
+    $this->middleware('checkauth');
+  }
+    /**
+     * Display a listing of the resource.
+     *
+     * @return \Illuminate\Http\Response
+     */
+    public function index(Request $request)
+    {
+      $location = $request->input('locationId');
+      $date = $request->input('date');
+
+
+      $auth_session = \ Session::get('auth');
+      $studio_id = $auth_session['admin_id'];
+      $this->studio_id = $studio_id;
+      $locations = StudioLocation::with('Location')->where('studio_id',$this->studio_id)->get();
+      $studio_teachers = StudioTeacher::with('Teacher')->where('studio_id',$this->studio_id)->get();
+
+      $teachers = Teacher::pluck('email');
+      $styles = Style::where('studio_id',$this->studio_id)->get();
+      $studio_class = StudioClass::with(['Style', 'teacher:teacher_id,firstname,lastname','student_class'=>function($query){
+        $query->with('student:student_id,firstname,lastname');
+      }])->where([['status', '!=','cancelled'],['created_by',$this->studio_id],['created_type','studio']]) ;
+
+      $pending_class = StudioClass::where('status','pending');
+      if (isset($location)) {
+        $studio_class->where('location_id',$location);
+        $pending_class->where('location_id',$location);
+      }elseif ($locations && isset($locations[0])) {
+        $studio_class->where('location_id',$locations[0]->location_id);
+        $pending_class->where('location_id',$locations[0]->location_id);
+      }
+      if (isset($date)) {
+        $date1 = json_decode($request->input('date'));
+        if (is_array($date1)) {
+          $studio_class->whereBetween('date', [date('Y-m-d',strtotime($date1[0])),date('Y-m-d',strtotime($date1[1]))]);
+          $pending_class->whereBetween('date', [date('Y-m-d',strtotime($date1[0])),date('Y-m-d',strtotime($date1[1]))]);
+        }else {
+          $studio_class->where('date', date('Y-m-d',strtotime($date)));
+          $pending_class->where('date', date('Y-m-d',strtotime($date)));
+        }
+
+      }else {
+        $pending_class->where('date', date('Y-m-d'));
+        $studio_class->where('date', date('Y-m-d'));
+      }
+
+      $pending_class = $pending_class->pluck('class_id');
+      if ($pending_class) {
+        $pending_class = $pending_class->toArray();
+        $pending_class = json_encode($pending_class);
+      }
+      $studio_class->orderBy('date', 'asc')->orderBy('start_time', 'asc');
+
+      $studio_class = $studio_class->get();
+      if ($request->ajax()) {
+        $this->layout = null;
+        return view('studio.ajaxclasslist',compact('studio_class','locations','styles','studio_teachers','pending_class'));
+      }
+        $studio_class->where('status', 'active');
+        return view('studio.classlist',compact('studio_class','locations','styles','studio_teachers','teachers','pending_class'));
+    }
+
+    /**
+     * Show the form for creating a new resource.
+     *
+     * @return \Illuminate\Http\Response
+     */
+    public function create()
+    {
+      die($this->studio_id);
+        //
+    }
+
+    /**
+     * Store a newly created resource in storage.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\Response
+     */
+    public function store(Request $request)
+    {
+      if ($request->ajax()) {
+        $this->layout = null;
+        $auth_session = \ Session::get('auth');
+        $studio_id = $auth_session['admin_id'];
+        $class_data = $request->get('class-form');
+        if (isset($class_data['repeat-end-date']) && !empty($class_data['repeat-end-date']) && !array_key_exists('repeat-days', $class_data)) {
+          $validator = Validator::make($request->all(), ['repeat-days' => 'required']);
+          if ($validator->fails()) {
+            return redirect()->back()->withInput()->withErrors($validator);
+          }
+        }
+        //$start_date = date("Y-m-d", strtotime($class_data['start-date']));
+        //$start_day = date("w", strtotime($class_data['start-date']));
+        $class_data['studio_id'] = $studio_id;
+        $class_data['date'] = $class_data['date'] ? date("Y-m-d", strtotime($class_data['date'])) : date("Y-m-d");
+        $class_data['start-time'] = $class_data['start-time'];
+        
+        if (isset($class_data['repeat-end-date']) && !empty($class_data['repeat-end-date'])) {
+          $date1 = date_create(date('Y-m-d',strtotime($class_data['date'])));
+          $date2 = date_create(date('Y-m-d',strtotime($class_data['repeat-end-date'])));
+          $difference = date_diff($date1, $date2);
+          $difference_days = $difference->format("%a");
+
+          if ($difference_days > 0) {
+            if (isset($class_data['repeat-days'])) {
+              for ($i=1; $i <= $difference_days; $i++) {
+                $week_day = date('w', strtotime(' +'.$i.' day'));
+                $class_data['date'] = date("Y-m-d", strtotime(' +'.$i.' day'));
+                if (in_array($week_day,$class_data['repeat-days'])) {
+                  $insert_class =  StudioClass::saveClass($class_data);
+                }
+              }
+            } else {
+              $class_data['date'] = date("Y-m-d");
+              $insert_class =  StudioClass::saveClass($class_data);
+            }
+          } else {
+            $class_data['date'] = date("Y-m-d");
+            $insert_class =  StudioClass::saveClass($class_data);
+          }
+        }else {
+          if (isset($class_data['repeat-days']) && is_array($class_data['repeat-days'])) {
+            foreach($class_data['repeat-days'] as $repeatDays){
+              $class_data['date'] = $this->getdate($repeatDays);
+              $insert_class = StudioClass::saveClass($class_data);
+            }
+          } else{
+            $insert_class =   StudioClass::saveClass($class_data);
+          }
+        }
+        return response()->json(array('success' => true,'id'=>$insert_class->id));
+      }
+  //  echo view('studio.ajaxclasslist',compact('studio_class','locations','styles','studio_teachers'));
+      // $resp =  view('studio.ajaxclasslist',compact('studio_class','locations','styles','studio_teachers'))->render();
+
+    //return response()->json(['success'=>true]);
+
+      //Session::flash('message', 'Class added Successfully.');
+      //Session::flash('alert-class', 'alert-success');
+      //return redirect()->back();
+    }
+
+    /**
+     * Display the specified resource.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\Response
+     */
+    public function show($id)
+    {
+        //
+    }
+
+    /**
+     * Show the form for editing the specified resource.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\Response
+     */
+    public function edit($id)
+    {
+        //
+    }
+
+    /**
+     * Update the specified resource in storage.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  int  $id
+     * @return \Illuminate\Http\Response
+     */
+    public function update(Request $request, $id)
+    {
+        //
+    }
+
+    /**
+     * Remove the specified resource from storage.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\Response
+     */
+    public function destroy($id)
+    {
+        //
+    }
+
+    public function markattended(Request $request){
+      $input = $request->all();
+      if(!empty($input)){
+        $id = $input['dataStudentClassId'];
+        $studentClass = StudentClass::find($id);
+
+        if(!empty($studentClass)){
+          $studentClass->checked_in = ucfirst($input['attended']);
+          $studentClass->save();
+          return response()->json(['status' => 'Successfully', 'statuscode' => '200']);
+        }
+
+      }
+      return response()->json(['status' => 'error', 'statuscode' => '404']);
+
+    }
+
+
+    public function addStyle(Request $request)
+    {
+      $auth_session = \ Session::get('auth');
+      $studio_id = $auth_session['admin_id'];
+
+      $style_name = Style::where('level_name',$request->input(['name']))->first();
+        $style = new Style;
+        // $data1 = $request->get('add-style');
+        if(empty($style_name)) {
+          $style['level_name']         = $request->input(['name']);
+          $style['description']  = $request->input(['description']);
+          $style['studio_id']    = $studio_id;
+          $style->save();
+
+          Session::flash('success', 'Style added Successfully.');
+          return redirect()->back();
+        }else{
+          Session::flash('failure', 'Warning! Style Name already exists.');
+          return redirect()->back();
+        }
+
+    }
+
+    public function addExistingTeacher(Request $request)
+    {
+        $auth_session = \ Session::get('auth');
+        $studio_id = $auth_session['admin_id'];
+        $teacher_exist = Teacher::where('email',$request->input(['email']))->first();
+        if($teacher_exist){
+          $data = new StudioTeacher;
+          $data['studio_id'] = $studio_id;
+          $data['teacher_id'] = $teacher_exist['teacher_id'];
+          $data->save();
+
+          Session::flash('success', 'Teacher added.');
+          return redirect()->back();
+        }else{
+           Session::flash('failure', 'Warning! Teacher already exists.');
+          return redirect()->back();
+        }
+    }
+
+    public function addNewTeacher(Request $request)    {
+        $request_data = $request->all();
+        $auth_session = \ Session::get('auth');
+        $studio_id = $auth_session['admin_id'];
+        $teacher = Teacher::where('email',$request->input(['email']))->first();
+        if(!$teacher)
+        {
+
+          $data = Teacher::create([
+             'firstname' => $request_data['firstname'],
+             'lastname' => $request_data['firstname'],
+             'email' => $request_data['email'],
+             ]);
+          $teacher_id = $data->id;
+
+          $data1 = new StudioTeacher;
+          $data1['studio_id'] = $studio_id;
+          $data1['teacher_id'] = $teacher_id;
+          $data1->save();
+
+          Session::flash('success', 'Teacher Added Successfully.');
+          return redirect()->back();
+        }else{
+
+          Session::flash('failure', 'Warning! Email ID already exists.');
+          return redirect()->back();
+
+          Session::flash('failure', 'Warning! Teacher already exists.');
+          return redirect()->back();
+        }
+    }
+
+    //cancelled class
+    public function cancelledclass(Request $request){
+      $input = $request->all();
+      if(!empty($input)){
+
+        $allClassId = $input['dataclassidarray'];
+        $status = $input['status'];
+
+        if(is_array($allClassId) && !empty($allClassId)){
+            if ($status == 'delete') {
+              $studioClass = StudioClass::whereIn('class_id', $allClassId)->delete();
+            }else {
+              $studioClass = StudioClass::whereIn('class_id', $allClassId)->update(['status' => $status]);
+            }
+
+          return response()->json(['status' => 'Successfully', 'statuscode' => '200']);
+        }
+      }
+      return response()->json(['status' => 'error', 'statuscode' => '404']);
+    }
+
+
+    public function getdate($repeatDays){
+        $day = date('l', strtotime(date('Y-m-d')));
+        $dayArray = array('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday');
+        $keys = array_keys($dayArray, $day);
+        $currentDayNumber = $keys[0];
+        $studioClassDate = '';
+        switch($repeatDays){
+              case 1:
+                if($currentDayNumber > $repeatDays){
+                  $days = $currentDayNumber + $repeatDays -1;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }elseif($currentDayNumber < $repeatDays){
+                  $days = $repeatDays - $currentDayNumber;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }else{
+                  $studioClassDate = date('Y-m-d');
+                }
+                break;
+              case 2:
+                if($currentDayNumber > $repeatDays){
+                  $days = $currentDayNumber + $repeatDays - 1;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }elseif($currentDayNumber < $repeatDays){
+                  $days = $repeatDays - $currentDayNumber;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }else{
+                  $studioClassDate = date('Y-m-d');
+                }
+                break;
+              case 3:
+                if($currentDayNumber > $repeatDays){
+                  $days = $currentDayNumber + $repeatDays - 1;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }elseif($currentDayNumber < $repeatDays){
+                  $days = $repeatDays - $currentDayNumber;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }else{
+                  $studioClassDate = date('Y-m-d');
+                }
+                break;
+              case 4:
+                if($currentDayNumber > $repeatDays){
+                  $days = $currentDayNumber + $repeatDays - 1;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }elseif($currentDayNumber < $repeatDays){
+                  $days = $repeatDays - $currentDayNumber;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }else{
+                  $studioClassDate = date('Y-m-d');
+                }
+                break;
+              case 5:
+                if($currentDayNumber > $repeatDays){
+                  $days = $currentDayNumber + $repeatDays - 1;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }elseif($currentDayNumber < $repeatDays){
+                  $days = $repeatDays - $currentDayNumber;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }else{
+                  $studioClassDate = date('Y-m-d');
+                }
+                break;
+              case 6:
+                if($currentDayNumber > $repeatDays){
+                  $days = $currentDayNumber + $repeatDays - 1;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }elseif($currentDayNumber < $repeatDays){
+                  $days = $repeatDays - $currentDayNumber;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }else{
+                  $studioClassDate = date('Y-m-d');
+                }
+                break;
+              default:
+                if($currentDayNumber > $repeatDays){
+                  $days = $currentDayNumber + $repeatDays - 1;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }elseif($currentDayNumber < $repeatDays){
+                  $days = $repeatDays - $currentDayNumber;
+                  $studioClassDate = date("Y-m-d", strtotime(' +'.$days.' day'));
+                }else{
+                  $studioClassDate = date('Y-m-d');
+                }
+            }
+
+            $studioClassDate = (isset($studioClassDate) && !empty($studioClassDate))  ? $studioClassDate : date("Y-m-d");
+
+        return $studioClassDate;
+
+
+    }
+
+    //update class.
+    public function editclass(Request $request){
+      $input = $request->all();
+      $validator = Validator::make($request->all(), [
+                       'class_id' => 'required',
+                       'start_time' => 'required',
+                       'duration' => 'required',
+                       'style_id'  => 'required|integer|min:1',
+                       'teacher_id' => 'required|integer|min:1',
+                       'spot_management' => 'required'
+
+                   ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->messages(), 'status' => 400]);
+        }else{
+
+            $class_id = $input['class_id'];
+            unset($input['_token']);
+            unset($input['class_id']);
+            $input['start_time'] = date("H:i:s", strtotime($input['start_time']));
+            $studioClass = StudioClass::where('class_id', $class_id)->update($input);
+            return response()->json(['success' => 'Update Successfully.', 'status' => 200]);
+        }
+    }
+
+
+    public function classCloning(Request $request){
+        $data = $request->input();
+        if( !empty($data['clone_from']) && !empty($data['clone_to'])){
+
+          $auth_session = \ Session::get('auth');
+          $studio_id = $auth_session['admin_id'];
+
+          if(!$data['is_array']){
+            $from = date('Y-m-d', strtotime($data['clone_from']));
+            $to = date('Y-m-d', strtotime($data['clone_to']));
+            $classes = StudioClass::where(['date'=>$from, 'created_by'=>$studio_id, 'location_id'=>$data['location_id']])->get(['level_id','teacher_id','style_id','location_id','start_time','duration','status','avg','no_users_rate','price','price_in_dollar','created_by','rental','created_type','fixed_payment','variable_student_1','variable_payment_1','variable_payment_2','original_teacher_id','gold','visible_to_student','visible_to_teacher','number_of_spots','spot_management']);
+            if($classes->count()){
+              foreach ($classes as $key => $this_class) {
+                $classData = array();
+                $classData = $this_class->toArray();
+                $classData['date'] = $to;
+                $is_saved = StudioClass::cloneClass($classData);
+              }
+              return response()->json(['success' => 'Cloning done', 'status' => 200]);
+            } else {
+              return response()->json(['success' => 'No Class found on selected date.', 'status' => 200]);
+            }
+          } else {
+            $from = explode('-', $data['clone_from']);
+            $to = explode('-', $data['clone_to']);
+            for($i=0; $i<=6; $i++){
+              $filteredDate = date('Y-m-d', strtotime($from[0]. " + $i days"));
+              $classes = StudioClass::where(['date'=>$filteredDate, 'created_by'=>$studio_id, 'location_id'=>$data['location_id']])->get(['level_id','teacher_id','style_id','location_id','start_time','duration','status','avg','no_users_rate','price','price_in_dollar','created_by','rental','created_type','fixed_payment','variable_student_1','variable_payment_1','variable_payment_2','original_teacher_id','gold','visible_to_student','visible_to_teacher','number_of_spots','spot_management']);
+              $classes = json_decode(json_encode($classes), true);
+              foreach ($classes as $key => $class) {
+                $classData = array();
+                $classData = $class;
+                $classData['date'] = date('Y-m-d', strtotime($to[0]. " + $i days"));
+                $is_saved = StudioClass::cloneClass($classData);
+              }
+            }
+            return response()->json(['success' => 'Cloning done', 'status' => 200]);
+          }
+      } else {
+        return response()->json(['failed' => 'Please enter the required fields.', 'status' => 500]);
+      }
+    }
+
+}

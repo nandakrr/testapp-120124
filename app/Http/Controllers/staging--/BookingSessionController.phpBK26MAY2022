@@ -1,0 +1,650 @@
+<?php
+
+namespace App\Http\Controllers\staging;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
+use App\Traits\CommonTrait;
+use Validator;
+use Illuminate\Support\Str;
+use Session;
+
+class BookingSessionController extends Controller
+{
+    use CommonTrait;
+
+    function __construct()
+    {
+        //$this->middleware('checkauth');
+    }
+
+
+
+    public function index()
+    {
+        $this->distroyAllSession();
+
+        $seodata = DB::table('seo_details')->where('page_url','book-session')->first();
+        $data['title']   = $seodata->title;
+        $data['desc']    = $seodata->description;
+        $data['keyword'] = $seodata->keyword;
+        $data['service_type'] = [];
+        $data['parking_type'] = $this->ParkingTypeList('web');
+        //print_r($data); die;
+        return view('bookSession-new',compact('data'));
+    }
+
+    /**
+     * This Method use for get list of service type 
+     */
+    public function ServiceTypeList($type="API")
+    {
+        $url = 'https://bigtoe.app/app/ClientSide_V1/getAllActiveServices';
+        
+        $payload = [
+            'student_id' => session()->get('student_id'),
+            'token' => session()->get('student_token'),
+        ];
+        $res = $this->curlRequestCall('POST', $payload, $url);
+
+        $json_result = json_decode($res, true);
+        $categories = [];
+        if($json_result['ResponseCode'] == 1)
+        {
+            $skillCategory = $json_result['Result']['skill_category'];
+            if($skillCategory)
+            {
+                // /$serviceType = collect([ 'private_yoga' => 'Private Yoga', 'massage' => 'Massage']);
+
+                foreach($skillCategory as $singlecat)
+                {
+                    $service_category_id = $singlecat['service_category_id'];
+                    $service_category = $singlecat['service_category'];
+                    $categories[$service_category_id] = $service_category; 
+                }
+            }
+            return response()->json(['ResponseCode' => 1, 'ResponseMessage' => 'SUCCESS', 'Comments' => '', 'status' => 'accepted', 'headline' =>'Extra Time Accepted', 'time_options' => array(), 'text' => $categories], 200);
+        }
+        return response()->json(['ResponseCode' => 0, 'ResponseMessage' => 'FAILER', 'Comments' => '', 'status' => 'regect', 'time_options' => array(), 'text' => $categories], 200);
+    }
+	
+	
+
+    /**
+     * This Method use for get list of child service base on parent services 
+     */
+    public function ChildServiceTypeList(Request $request,$parent_id)
+    {
+        abort_if(!$parent_id ,response()->json(['message' => 'Service type is is invalid.'], 422),422);
+        
+        $url = 'https://bigtoe.app/app/ClientSide_V1/getAllActiveServices';
+        
+        $payload = [
+            'student_id' => session()->get('student_id'),
+            'student_id' => session()->get('student_id'),
+            'token' => session()->get('student_token'),
+        ];
+        $res = $this->curlRequestCall('POST', $payload, $url);
+
+        $json_result = json_decode($res, true);
+        if($json_result['ResponseCode'] == 1)
+        {
+            $subCategories = [];
+
+            $skillCategory = $json_result['Result']['skill_category'];
+            if($skillCategory)
+            {
+                // /$serviceType = collect([ 'private_yoga' => 'Private Yoga', 'massage' => 'Massage']);
+
+                foreach($skillCategory as $singlecat)
+                {
+                    $service_category_id = $singlecat['service_category_id'];
+                    $skills = $singlecat['skill'];
+                    foreach($skills as $skill)
+                    {
+                        $skill_id = $skill['skill_id'];
+                        $subCategories[$service_category_id][$skill_id] = $skill['name'];
+                    }
+                }
+            }
+            $serviceType = collect($subCategories);
+            return response()->json(['ResponseCode' => 1, 'ResponseMessage' => 'SUCCESS', 'Comments' => '', 'status' => 'accepted', 'headline' =>'Extra Time Accepted', 'time_options' => array(), 'text' => $serviceType->get($parent_id)], 200);
+        }
+    }
+
+    /**
+     * This Method use for get list of service type 
+     */
+    public function ParkingTypeList($type="API")
+    {
+        $serviceType = collect([ 'parking_1' => 'Street', 'parking_2' => 'Lot or Garage', 'parking_3' => 'Valet', 'parking_4' => 'Not Sure']);
+        return $type == "API" ? response()->json(['ResponseCode' => 1, 'ResponseMessage' => 'SUCCESS', 'Comments' => '', 'status' => 'accepted', 'headline' =>'Extra Time Accepted', 'time_options' => array(), 'text' => $serviceType->toArray()], 200) : $serviceType->toArray();
+
+        //return response()->json(['status' => 200, 'data' => $serviceType->toArray()], 200);
+    }
+
+    /**
+     * THIS METHOD MANAGE ALL CURL REQUEST FOR THIS CONTROLLER 
+     */
+    private function curlRequestCall($method = '', $data = '', $url = '')
+    {
+      if ($method == 'POST' || $method == 'post') 
+      {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "POST");
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        // $headers = array(
+        //     "Content-Type: application/json",
+        //  );
+        //  curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+
+        //for debug only!
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+
+
+        $result = curl_exec($ch);
+        curl_close($ch);
+        //var_dump($result);
+        return $result;
+      }
+
+      if ($method == 'PUT' || $method == 'put') 
+      {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "PUT");
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        $headers = array(
+            "Content-Type: application/json",
+        );
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+
+        //for debug only!
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+
+        $result = curl_exec($ch);
+        curl_close($ch);
+        //var_dump($result);
+        return $result;
+      }
+
+      if ($method == 'GET' || $method == 'get') {
+          $ch = curl_init($url);
+          curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "GET");
+          // curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+          curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
+          $result = curl_exec($ch);
+          curl_close($ch);
+          return $result;
+      }
+    }
+
+    /**
+     * This Method will use when 1st step will be process
+     * @method : POST using AJAX
+     */
+    public function personalDetails(Request $request)
+    {
+        // browser call will not allowed
+        abort_if(!$request->ajax() ,response()->json(['message' => 'Request not allowed.'], 422),422);
+
+        $validator = Validator::make($request->all(),[
+            'firstname' => 'required',
+            'lastname' => 'required',
+            'email' => 'required',
+            'gender' => 'required',
+            'phone_no' => 'required',
+            'age_range' => 'required'    
+        ]);
+        
+        if($validator->fails()) 
+        {
+            $validain['status'] = 422; 
+            $validain['response']['ResponseCode'] = 0;
+            $allerror = "";
+            foreach($validator->errors()->toArray() as $k => $er)
+            {
+                $allerror .= $er[0]."\n";
+            }
+            $validain['messsage'] = $allerror;
+            return response()->json($validain,$validain['status']);
+        }
+
+
+        //$request_data 	= $request->all();
+        $firstname 		= ucfirst(trim($request->firstname));
+        $lastname 		= ucfirst(trim($request->lastname));
+        $email 			= trim($request->email);
+        $phone_no 		= trim($request->phone_no);
+        $gender 		= trim($request->gender);
+        $age_range 		= trim($request->age_range);
+        $password       = Str::random(8); //Str::random(8);
+
+        $payload = [
+            'email'     => $email,
+            'firstname' => $firstname,
+            'lastname'  => $lastname,
+            'password'  => $password,
+            'phone_no'  => $phone_no,
+            'gender'    => $gender,
+            'age_range' => $age_range,
+            'device_type' => 'Browser'
+        ];
+
+        $url = 'https://bigtoe.app/app/Auth_V1/register';
+        $res = $this->curlRequestCall('post', $payload, $url);
+
+        $json_result = json_decode($res, true);
+
+        // IF allready exist then login
+        if ($json_result['ResponseCode'] == 0) 
+        {
+            $url = 'https://bigtoe.app/app/Auth_V1/login';
+            $res = $this->curlRequestCall('post', $payload, $url);
+    
+            $json_result = json_decode($res, true);
+        }
+        
+        if ($json_result['ResponseMessage'] == 'SUCCESS') 
+        {
+            $result = $json_result['Result'];
+            $personal = collect($result);
+            //session()->put('personal', $personal);
+            //Session::get('personal');
+
+            session()->put('student_id', $personal['student_id'],0);
+            session()->put('student_email', $email);
+            session()->put('student_full_naame',$firstname.' '.$lastname);
+            session()->put('student_token', $personal['token']);
+            
+            $response['status'] = 200;
+            $response['response'] = $json_result;
+            $response['message'] = 'Successfully registerd.';
+        }
+        else
+        {
+            $response['status'] = 422; 
+            $response['response']['ResponseCode'] = $json_result['ResponseCode'];
+            $response['messsage'] = $json_result['Comments'];
+        }
+
+        return response()->json($response,$response['status']);
+    }
+
+     /**
+     * This Method will use when 2nd step will be process
+     * @method : POST using AJAX
+     */
+    public function addressDetails(Request $request)
+    {
+        abort_if(!$request->ajax() ,response()->json(['message' => 'Request not allowed.'], 422),422);
+
+        $rules = [
+            'student_id'    => 'required',
+            'locationtype'  => 'required',
+            //'locationname'  => 'required',
+            //'residencetype' => 'required',
+            'street_address'=> 'required',
+            //'unit_number'   => 'required',
+            'city'          => 'required',
+            'state'         => 'required',
+            'zipcode'       => 'required',
+            'country'       => 'required',
+            'latitude'      => 'required',
+            'longitude'     => 'required',
+            'new_token'     => 'required',
+            'cats'          => 'required',
+            'dogs'          => 'required',
+            'parkingtype'   => 'required',
+            'parkingfee'    => 'required',
+            'stairs'        => 'required',  
+        ];
+
+        
+        if($request->locationtype == "hotel")
+        {
+            $rules['locationname'] = 'required';
+            $rules['unit_number'] = 'required';
+        }
+        if($request->locationtype == "residence")
+        {
+            $rules['residencetype'] = 'required';
+        }
+        $validator = Validator::make($request->all(),$rules);
+        
+        if ($validator->fails()) 
+        {
+            $validain['status'] = 422; 
+            $validain['response']['ResponseCode'] = 0;
+            $allerror = "";
+            foreach($validator->errors()->toArray() as $k => $er)
+            {
+                $allerror .= $er[0]."\n";
+            }
+            $validain['messsage'] = $allerror;
+            return response()->json($validain,$validain['status']);
+        }
+
+        $payload = $request->all();
+        $payload['token'] = $request->new_token; 
+        $payload['locationtype'] = ucwords($request->locationtype); 
+        $payload['residencetype'] = !empty($request->residencetype) ? strtolower($request->residencetype) : null;
+        $payload['student_id'] = session()->get('student_id');
+        $payload['device_type'] = 'Browser';
+        session()->put('street_address',$request->street_address);
+        
+        $oldLat = session()->get('latitude');
+        $oldLong = session()->get('longitude');
+        
+        // Check every request if stret_address changed OR not
+        // If changed then call saveAddress else updateAddress
+        if( !empty($oldLat) && ($oldLat == $request->latitude) || ($oldLong == $request->longitude) )
+        {
+            $payload['student_address_id'] = session()->get('student_address_id');
+            
+            $url = 'https://bigtoe.app/app/ClientSide_V1/updateStudentAddress';
+            $res = $this->curlRequestCall('PUT', $payload, $url);
+        }
+        else
+        {
+            $url = 'https://bigtoe.app/app/ClientSide_V1/saveStudentAddress';
+            $res = $this->curlRequestCall('post', $payload, $url);
+        }
+        $json_result = json_decode($res, true);
+
+        if ($json_result['ResponseMessage'] == 'SUCCESS') 
+        {
+            $result = $json_result['Result'];
+            $address = collect($result);
+            session()->put('student_address_id', $address['student_address_id'],0);
+            session()->put('latitude',$request->latitude,0);
+            session()->put('longitude', $request->longitude,0);
+            
+            $response['status'] = 200;
+            $response['response'] = $json_result;
+            $response['message'] = 'address added successfully.';
+        }
+        else
+        {
+            $response['status'] = 422; 
+            $response['response']['ResponseCode'] = $json_result['ResponseCode'];
+            $response['messsage'] = $json_result['Comments'];
+        }
+        return response()->json($response,$response['status']);
+    }
+
+    /**
+     * This Method use for get booking option.
+     * @param student_id,cat_id,skill_id,student_address_id
+     * @return  DURATION,GENDER,TIME_SLOT
+     * 
+     * AFTER returned value select other filed will be display
+     */
+    public function getBookingOptions(Request $request)
+    {
+        abort_if(!$request->ajax() ,response()->json(['message' => 'Request not allowed.'], 422),422);
+
+        $rules = [
+            'student_id'    => 'required',
+            'service_category_id'        => 'required',  
+            'skill_id'        => 'required',  
+            'address_id'        => 'required',  
+        ];
+
+        $validator = Validator::make($request->all(),$rules);
+        
+        if ($validator->fails()) 
+        {
+            $validain['status'] = 422; 
+            $validain['response']['ResponseCode'] = 0;
+            $allerror = "";
+            foreach($validator->errors()->toArray() as $k => $er)
+            {
+                $allerror .= $er[0]."\n";
+            }
+            $validain['messsage'] = $allerror;
+            return response()->json($validain,$validain['status']);
+        }
+        $payload = $request->all();
+        $payload['student_id'] = session()->get('student_id');
+        $payload['token'] =  session()->get('student_token');
+
+        session()->put('category_name',$request->service_category_text);
+        session()->put('skill_name',$request->skill_text);
+
+        $url = 'https://bigtoe.app/app/ClientSide_V1/getBookingOptions';
+        $res = $this->curlRequestCall('post', $payload, $url);
+        $json_result = json_decode($res, true);
+        
+        if ($json_result['ResponseMessage'] == 'SUCCESS') 
+        {
+            $result = $json_result['Result'];
+            $prices = $result['price'];
+            $durations = [];
+            if($prices)
+            {
+                foreach($prices as $price)
+                {
+                    $durations[] = $price['duration'];
+                }
+            }
+            
+            $gender = $result['provider_gender'];
+            $timeSlots = $result['time_slot'];
+            $finalSlots = [];
+            if($timeSlots)
+            {
+                foreach($timeSlots as $timeSlot)
+                {
+                    $date   = $timeSlot['date'];
+                    $slotAr = $timeSlot['slot_ar'];
+                    $finalSlots[$date] = $slotAr; 
+                }
+            }
+
+            $response['status'] = 200;
+            //            $response['response'] = $json_result;
+            
+            session()->put('tooltip_text',$result['tooltip_text']);
+            session()->put('cancellation_policy',$result['cancellation_policy']);
+            
+            $response['message'] = 'address added successfully.'; 
+            $response['content']['duration'] = view('booking-session.duration',compact('durations'))->render();
+            $response['content']['gender']   = view('booking-session.gender',compact('gender'))->render();
+            $response['content']['time_slots'] = view('booking-session.time-slots',compact('finalSlots'))->render();
+        }
+        else
+        {
+            $response['status'] = 422; 
+            $response['response']['ResponseCode'] = $json_result['ResponseCode'];
+            $response['messsage'] = $json_result['Comments'];
+        }
+        return response()->json($response,$response['status']);
+    }
+    
+    
+    public function requestDetails(Request $request)
+    {
+        abort_if(!$request->ajax() ,response()->json(['message' => 'Request not allowed.'], 422),422);
+
+        $rules = [
+            "student_id"          => "required",
+            "service_category_id" => "required",
+            "skill_id"            => "required",
+            "address_id"          => "required",
+            "is_rebook"           => "required",
+            "number_of_people"    => "required",
+            "provider_id"         => "required",
+            "preferred_gender"    => "required",
+            "requested_date"      => "required",
+            "duration"            => "required",
+            "add_ons_id"          => "required",
+            "requested_time"      => "required",  
+        ];
+
+        $validator = Validator::make($request->all(),$rules);
+        
+        if ($validator->fails()) 
+        {
+            $validain['status'] = 422; 
+            $validain['response']['ResponseCode'] = 0;
+            $allerror = "";
+            foreach($validator->errors()->toArray() as $k => $er)
+            {
+                $allerror .= $er[0]."\n";
+            }
+            $validain['messsage'] = $allerror;
+            return response()->json($validain,$validain['status']);
+        }
+        $payload = $request->all();
+        $payload['student_id'] = session()->get('student_id');
+        $payload['token'] =  session()->get('student_token');
+        $payload['address_id'] = session()->get('student_address_id');
+        $payload['coupon_code'] = '';
+
+        $date = \Carbon\Carbon::createFromFormat('Y-m-d', $request->requested_date);
+        session()->put('requested_date',$date->format('F d'));
+
+        $requestedDateTime = $request->requested_date.' '.$request->requested_time.':00';
+
+        session()->put('requested_time',date('h:i A', strtotime($requestedDateTime)));
+        session()->put('duration',str_replace("m"," mins",$request->duration));
+        session()->put('book_session_record',$payload);
+        
+
+        $url = 'https://bigtoe.app/app/ClientSide_V1/priceSession';
+        $res = $this->curlRequestCall('post', $payload, $url);
+        $json_result = json_decode($res, true);
+
+        if ($json_result['ResponseMessage'] == 'SUCCESS') 
+        {
+            $result = $json_result['Result'];
+            $response['status'] = 200;
+            $response['response'] = $result;
+            $response['ResponseCode'] = $json_result['ResponseCode'];
+            $response['message'] = $json_result['Comments'];
+            $prices = $result['price'];
+            $netCost = $json_result['net_cost'];
+            $parking = $json_result['parking'];
+            $response['category_name'] = session()->get('category_name');
+            $response['skill_name']    = session()->get('skill_name');
+            $response['summary_name']    = session()->get('category_name').' / '.session()->get('skill_name');
+            $response['requested_date'] = session()->get('requested_date');
+            $response['requested_time'] = session()->get('requested_time');
+            $response['duration'] = session()->get('duration');
+            $response['street_address'] = session()->get('street_address');
+            $response['cancellation_policy'] = session()->get('cancellation_policy');
+            $response['content'] = view('booking-session.staging.booking-price',compact('prices','netCost','parking'))->render();
+            $response['response']['ResponseCode'] = $json_result['ResponseCode'];
+        }
+        else
+        {
+            $response['status'] = 422; 
+            $response['response']['ResponseCode'] = $json_result['ResponseCode'];
+            $response['messsage'] = $json_result['Comments'];
+        }
+        return response()->json($response,$response['status']);
+    }
+
+    /**
+     * THIS METHOD USE FOR FINAL REQUEST
+     */
+    public function stripeget(Request $request)
+    {
+        $rules = [
+            "stripeToken"          => "required",
+        ];
+
+        $validator = Validator::make($request->all(),$rules);
+        
+        if ($validator->fails()) 
+        {
+            $validain['status'] = 422; 
+            $validain['response']['ResponseCode'] = 0;
+            $allerror = "";
+            foreach($validator->errors()->toArray() as $k => $er)
+            {
+                $allerror .= $er[0]."\n";
+            }
+            $validain['messsage'] = $allerror;
+            return response()->json($validain,$validain['status']);
+        }
+        
+        $stripeToken = $request->stripeToken;
+
+        $payload['student_id'] = session()->get('student_id');
+        $payload['token'] =  session()->get('student_token');
+        $payload['customer_token'] =  $stripeToken;
+        session()->put('customer_token',$stripeToken);
+
+        $url = 'https://bigtoe.app/app/ClientSide_V1/addCard1';
+        $res = $this->curlRequestCall('post', $payload, $url);
+        $json_result = json_decode($res, true);
+
+        if ($json_result['ResponseMessage'] == 'SUCCESS') 
+        {
+            $bookSessionRecord = session()->get('book_session_record');
+            
+            $url = 'https://bigtoe.app/app/ClientSide_V1/bookSession';
+            $res = $this->curlRequestCall('post', $bookSessionRecord, $url);
+            $bookSessionResult = json_decode($res, true);
+            $result = $bookSessionResult['Result'];
+
+            $response['status'] = 200;
+            $response['response'] = $bookSessionResult;
+            $response['message'] = $bookSessionResult['Comments'];
+            //$response['message'] =  "Your request was successful. You can download our mobile apps using the links below. <a href='https://www.bigtoe.yoga/massage'>Click here</a>";
+            if( $bookSessionResult['ResponseCode'] == 1)
+            {
+                $requestId = $result['request_id'];                
+                $url = 'https://bigtoe.app/app/ClientSide_V1/getProviders';
+                $providerPayload = [
+                    'student_id' => session()->get('student_id'),
+                    'request_id' => $requestId,
+                    'token' => session()->get('student_token'),
+                ];
+                $res = $this->curlRequestCall('post', $providerPayload, $url);
+            }
+            $this->distroyAllSession();
+            return redirect('staging/booking/session/thank-you')->with('message', $response['message']);
+        }
+        else
+        {
+            $response['status'] = 422; 
+            $response['response']['ResponseCode'] = $json_result['ResponseCode'];
+            $response['message'] = $json_result['Comments'];
+        }
+        return redirect('staging/booking/session/thank-you')->with('message', $response['message']);
+    }
+
+    public function thankYou()
+    {
+        return view('booking-thank-you');
+    }
+    
+    private function distroyAllSession()
+    {
+        session()->forget('student_token');
+        session()->forget('student_id');
+        session()->forget('student_address_id');
+        session()->forget('student_email');
+        session()->forget('student_full_naame');
+        session()->forget('student_token');
+        session()->forget('requested_date');
+        session()->forget('requested_time');
+        session()->forget('duration');
+        session()->forget('book_session_record');
+        session()->forget('category_name');
+        session()->forget('skill_name');
+        session()->forget('customer_token');
+        session()->forget('tooltip_text');
+    }
+
+
+}
